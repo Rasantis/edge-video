@@ -27,6 +27,9 @@ type RTSPStream struct {
 	reconnectInterval time.Duration
 	frameBufferSize   int
 	jpegQuality       int
+	targetFPS         int           // FPS alvo configurado
+	minFrameInterval  time.Duration // Intervalo mínimo entre frames
+	lastFrameTime     time.Time     // Timestamp do último frame retornado
 }
 
 // RTSPStreamConfig configuração do stream RTSP
@@ -36,6 +39,7 @@ type RTSPStreamConfig struct {
 	FrameBufferSize   int           // Tamanho do buffer de frames (padrão: 30)
 	ReconnectInterval time.Duration // Intervalo de reconexão (padrão: 5s)
 	JPEGQuality       int           // Qualidade JPEG 2-31 (menor = melhor, padrão: 5)
+	TargetFPS         int           // FPS alvo (padrão: 18)
 }
 
 // NewRTSPStream cria um novo stream RTSP otimizado
@@ -49,8 +53,14 @@ func NewRTSPStream(ctx context.Context, config RTSPStreamConfig) (*RTSPStream, e
 	if config.JPEGQuality <= 0 || config.JPEGQuality > 31 {
 		config.JPEGQuality = 5
 	}
+	if config.TargetFPS <= 0 {
+		config.TargetFPS = 18 // Padrão: 18 fps
+	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
+
+	// Calcular intervalo mínimo entre frames baseado no FPS alvo
+	minFrameInterval := time.Duration(float64(time.Second) / float64(config.TargetFPS))
 
 	stream := &RTSPStream{
 		cameraID:          config.CameraID,
@@ -61,6 +71,9 @@ func NewRTSPStream(ctx context.Context, config RTSPStreamConfig) (*RTSPStream, e
 		reconnectInterval: config.ReconnectInterval,
 		frameBufferSize:   config.FrameBufferSize,
 		jpegQuality:       config.JPEGQuality,
+		targetFPS:         config.TargetFPS,
+		minFrameInterval:  minFrameInterval,
+		lastFrameTime:     time.Time{}, // Zero time - primeiro frame sempre passa
 	}
 
 	return stream, nil
@@ -104,25 +117,27 @@ func (s *RTSPStream) streamLoop() {
 func (s *RTSPStream) startFFmpegStream() error {
 	s.mu.Lock()
 
-	log.Printf("[%s] iniciando processo FFmpeg streaming", s.cameraID)
+	log.Printf("[%s] iniciando processo FFmpeg streaming (target: %d fps)", s.cameraID, s.targetFPS)
 
 	// FFmpeg em modo streaming: captura contínua de frames JPEG
-	// -re: lê o input na taxa de frames nativa
+	// -rtsp_transport tcp: TCP é mais confiável que UDP
 	// -fflags nobuffer: minimiza buffering para menor latência
 	// -flags low_delay: reduz delay
-	// -vsync 0: não sincroniza frames (mantém taxa original)
+	// -r <fps>: força taxa de captura específica (ANTES do -i)
+	// -vsync 0: não duplica/descarta frames para sincronizar
 	s.cmd = exec.CommandContext(
 		s.ctx,
 		"ffmpeg",
-		"-rtsp_transport", "tcp",          // TCP é mais confiável que UDP
-		"-fflags", "nobuffer",             // Minimiza buffering
-		"-flags", "low_delay",             // Baixa latência
-		"-i", s.url,                       // URL RTSP
-		"-vsync", "0",                     // Não ajusta framerate
-		"-f", "image2pipe",                // Output como pipe de imagens
-		"-vcodec", "mjpeg",                // Codec MJPEG (JPEG stream)
-		"-q:v", fmt.Sprintf("%d", s.jpegQuality), // Qualidade (2-31, menor=melhor)
-		"-",                               // Output para stdout
+		"-rtsp_transport", "tcp",                   // TCP é mais confiável que UDP
+		"-fflags", "nobuffer",                      // Minimiza buffering
+		"-flags", "low_delay",                      // Baixa latência
+		"-r", fmt.Sprintf("%d", s.targetFPS),       // FORÇA taxa de entrada (18 fps)
+		"-i", s.url,                                // URL RTSP
+		"-vsync", "0",                              // Não ajusta framerate
+		"-f", "image2pipe",                         // Output como pipe de imagens
+		"-vcodec", "mjpeg",                         // Codec MJPEG (JPEG stream)
+		"-q:v", fmt.Sprintf("%d", s.jpegQuality),   // Qualidade (2-31, menor=melhor)
+		"-",                                        // Output para stdout
 	)
 
 	// Capturar stdout para ler frames
@@ -270,13 +285,43 @@ func (s *RTSPStream) readJPEGFrame(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
-// GetFrame obtém próximo frame disponível (bloqueante)
+// GetFrame obtém próximo frame disponível com rate limiting (bloqueante)
+// Garante que frames sejam retornados no máximo na taxa de FPS configurada
 func (s *RTSPStream) GetFrame(timeout time.Duration) ([]byte, error) {
+	// Verificar se precisa aguardar para respeitar o intervalo mínimo
+	s.mu.Lock()
+	now := time.Now()
+	timeSinceLastFrame := now.Sub(s.lastFrameTime)
+
+	// Se passou menos que o intervalo mínimo, aguardar o tempo restante
+	if !s.lastFrameTime.IsZero() && timeSinceLastFrame < s.minFrameInterval {
+		waitTime := s.minFrameInterval - timeSinceLastFrame
+		s.mu.Unlock()
+
+		// Aguardar o tempo necessário antes de pegar próximo frame
+		select {
+		case <-time.After(waitTime):
+			// Tempo de espera completado, continuar
+		case <-s.ctx.Done():
+			return nil, fmt.Errorf("contexto cancelado")
+		}
+
+		s.mu.Lock()
+	}
+	s.mu.Unlock()
+
+	// Agora pegar o frame do buffer
 	select {
 	case frame := <-s.frameBuffer:
 		if len(frame) == 0 {
 			return nil, fmt.Errorf("frame vazio")
 		}
+
+		// Atualizar timestamp do último frame retornado
+		s.mu.Lock()
+		s.lastFrameTime = time.Now()
+		s.mu.Unlock()
+
 		return frame, nil
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout aguardando frame")

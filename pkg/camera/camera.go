@@ -41,6 +41,13 @@ func NewCapture(
 	redisStore *storage.RedisStore,
 	metaPublisher *metadata.Publisher,
 ) *Capture {
+	// Calcular FPS alvo a partir do intervalo configurado
+	// interval = 1s / targetFPS, então targetFPS = 1s / interval
+	targetFPS := int(float64(time.Second) / float64(interval))
+	if targetFPS <= 0 {
+		targetFPS = 18 // Fallback para 18 fps
+	}
+
 	// Criar stream RTSP otimizado com conexão persistente
 	stream, err := NewRTSPStream(ctx, RTSPStreamConfig{
 		CameraID:          config.ID,
@@ -48,6 +55,7 @@ func NewCapture(
 		FrameBufferSize:   30,                // Buffer de 30 frames (~1-2s)
 		ReconnectInterval: 5 * time.Second,   // Reconectar após 5s em caso de falha
 		JPEGQuality:       5,                 // Qualidade 5 (balanço qualidade/tamanho)
+		TargetFPS:         targetFPS,         // FPS calculado do config (ex: 18)
 	})
 
 	if err != nil {
