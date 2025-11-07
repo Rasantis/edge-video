@@ -1,11 +1,9 @@
 package camera
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log"
-	"os/exec"
 	"time"
 
 	"github.com/T3-Labs/edge-video/internal/metadata"
@@ -29,6 +27,9 @@ type Capture struct {
 	publisher     mq.Publisher
 	redisStore    *storage.RedisStore
 	metaPublisher *metadata.Publisher
+
+	// Stream RTSP otimizado (conexão persistente)
+	stream *RTSPStream
 }
 
 func NewCapture(
@@ -40,6 +41,30 @@ func NewCapture(
 	redisStore *storage.RedisStore,
 	metaPublisher *metadata.Publisher,
 ) *Capture {
+	// Criar stream RTSP otimizado com conexão persistente
+	stream, err := NewRTSPStream(ctx, RTSPStreamConfig{
+		CameraID:          config.ID,
+		URL:               config.URL,
+		FrameBufferSize:   30,                // Buffer de 30 frames (~1-2s)
+		ReconnectInterval: 5 * time.Second,   // Reconectar após 5s em caso de falha
+		JPEGQuality:       5,                 // Qualidade 5 (balanço qualidade/tamanho)
+	})
+
+	if err != nil {
+		log.Printf("[%s] erro ao criar stream RTSP: %v", config.ID, err)
+		// Retornar Capture sem stream - vai falhar graciosamente
+		return &Capture{
+			ctx:           ctx,
+			config:        config,
+			interval:      interval,
+			compressor:    compressor,
+			publisher:     publisher,
+			redisStore:    redisStore,
+			metaPublisher: metaPublisher,
+			stream:        nil,
+		}
+	}
+
 	return &Capture{
 		ctx:           ctx,
 		config:        config,
@@ -48,10 +73,26 @@ func NewCapture(
 		publisher:     publisher,
 		redisStore:    redisStore,
 		metaPublisher: metaPublisher,
+		stream:        stream,
 	}
 }
 
 func (c *Capture) Start() {
+	// Verificar se stream foi criado com sucesso
+	if c.stream == nil {
+		log.Printf("[%s] erro: stream RTSP não foi inicializado", c.config.ID)
+		return
+	}
+
+	// Iniciar stream RTSP (background com reconexão automática)
+	if err := c.stream.Start(); err != nil {
+		log.Printf("[%s] erro ao iniciar stream: %v", c.config.ID, err)
+		return
+	}
+
+	log.Printf("[%s] stream RTSP iniciado com sucesso", c.config.ID)
+
+	// Goroutine para publicar frames no intervalo configurado
 	go func() {
 		ticker := time.NewTicker(c.interval)
 		defer ticker.Stop()
@@ -59,7 +100,10 @@ func (c *Capture) Start() {
 		for {
 			select {
 			case <-c.ctx.Done():
-				log.Printf("parando captura para camera %s", c.config.ID)
+				log.Printf("[%s] parando captura", c.config.ID)
+				if c.stream != nil {
+					c.stream.Close()
+				}
 				return
 			case <-ticker.C:
 				c.captureAndPublish()
@@ -69,35 +113,29 @@ func (c *Capture) Start() {
 }
 
 func (c *Capture) captureAndPublish() {
-	cmd := exec.CommandContext(
-		c.ctx,
-		"ffmpeg",
-		"-rtsp_transport", "tcp",
-		"-i", c.config.URL,
-		"-frames:v", "1",
-		"-f", "image2pipe",
-		"-vcodec", "mjpeg",
-		"-q:v", "5",
-		"-",
-	)
+	// Verificar se stream está disponível
+	if c.stream == nil {
+		log.Printf("[%s] stream não disponível", c.config.ID)
+		return
+	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	// Obter frame do stream (com timeout de 2s)
+	// Timeout de 2s é adequado pois o stream já está buffering frames
+	frameData, err := c.stream.GetFrame(2 * time.Second)
 	if err != nil {
-		log.Printf("erro ao capturar frame da câmera %s: %v (stderr: %s)", c.config.ID, err, stderr.String())
+		// Não logar timeout como erro - é esperado ocasionalmente
+		if err.Error() != "timeout aguardando frame" {
+			log.Printf("[%s] erro ao obter frame: %v", c.config.ID, err)
+		}
 		return
 	}
 
-	frameData := stdout.Bytes()
 	if len(frameData) == 0 {
-		log.Printf("frame vazio capturado da câmera %s", c.config.ID)
+		log.Printf("[%s] frame vazio obtido", c.config.ID)
 		return
 	}
 
-	log.Printf("capturado frame da camera %s (%d bytes)", c.config.ID, len(frameData))
+	log.Printf("[%s] obtido frame do stream (%d bytes)", c.config.ID, len(frameData))
 
 	// Publicação principal (síncrona ou assíncrona, dependendo da implementação do publisher)
 	err = c.publisher.Publish(c.ctx, c.config.ID, frameData)

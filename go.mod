@@ -5,12 +5,15 @@ go 1.24.0
 toolchain go1.24.9
 
 require (
+	github.com/bluenviron/gortsplib/v4 v4.12.1
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/klauspost/compress v1.18.1
+	github.com/pion/rtp v1.8.10
 	github.com/spf13/viper v1.21.0
 	github.com/streadway/amqp v1.1.0
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/image v0.24.0
 )
 
 require (
