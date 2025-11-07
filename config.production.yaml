@@ -1,0 +1,108 @@
+# Configuração Otimizada para Produção - Edge Video Collector
+# IMPORTANTE: Comece com 5 câmeras para validar, depois escale para 30+
+
+target_fps: 18  # FPS realista para 30+ câmeras (não use 30!)
+protocol: amqp
+
+amqp:
+  amqp_url: "amqp://user:password@rabbitmq:5672/guard_vhost"  # CORRIGIDO: vhost incluído
+  exchange: "carnes_nobres_exchange"
+  routing_key_prefix: "camera."
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  topic_prefix: "camera/"
+
+# COMPRESSÃO: Habilitar para economizar banda (reduz ~60%)
+compression:
+  enabled: true  # IMPORTANTE: Habilitar em produção
+  level: 3       # Balanço velocidade/compressão
+
+# REDIS: DESABILITADO para economizar RAM
+# Com 30 câmeras @ 18fps, Redis consumiria ~24GB de RAM!
+redis:
+  enabled: false  # IMPORTANTE: Desabilitado para produção
+  address: "redis:6379"
+  ttl_seconds: 300
+  prefix: "frames"
+
+# METADATA: Pode deixar habilitado (overhead baixo)
+metadata:
+  enabled: true
+  exchange: "camera.metadata"
+  routing_key: "camera.metadata.event"
+
+# CÂMERAS: Comece com 5 para teste, depois aumente progressivamente
+# DVRs: 192.168.10.18 (16 cams), 192.168.10.20 (16 cams), 192.168.10.231 (32 cams)
+cameras:
+  # DVR 1 - 192.168.10.18 (teste com 5 câmeras)
+  - id: "cam1"
+    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=1&subtype=0"
+  - id: "cam2"
+    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=2&subtype=0"
+  - id: "cam3"
+    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=3&subtype=0"
+  - id: "cam4"
+    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=4&subtype=0"
+  - id: "cam5"
+    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=5&subtype=0"
+
+# INSTRUÇÕES PARA ESCALAR PARA 30+ CÂMERAS:
+# 1. Validar que 5 câmeras funcionam (FPS ~18, CPU <50%, Memória <1GB)
+# 2. Adicionar mais 5 câmeras (total 10) e monitorar
+# 3. Continuar escalando: 15, 20, 25, 30 câmeras
+# 4. Descomente as câmeras abaixo conforme necessário:
+
+# DVR 1 - 192.168.10.18 (câmeras 6-16)
+#  - id: "cam6"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=6&subtype=0"
+#  - id: "cam7"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=7&subtype=0"
+#  - id: "cam8"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=8&subtype=0"
+#  - id: "cam9"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=9&subtype=0"
+#  - id: "cam10"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=10&subtype=0"
+#  - id: "cam11"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=11&subtype=0"
+#  - id: "cam12"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=12&subtype=0"
+#  - id: "cam13"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=13&subtype=0"
+#  - id: "cam14"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=14&subtype=0"
+#  - id: "cam15"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=15&subtype=0"
+#  - id: "cam16"
+#    url: "rtsp://admin:Btk89222@@192.168.10.18:554/cam/realmonitor?channel=16&subtype=0"
+
+# DVR 2 - 192.168.10.20 (câmeras 17-32)
+#  - id: "cam17"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=1&subtype=0"
+#  - id: "cam18"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=2&subtype=0"
+#  - id: "cam19"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=3&subtype=0"
+#  - id: "cam20"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=4&subtype=0"
+#  - id: "cam21"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=5&subtype=0"
+#  - id: "cam22"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=6&subtype=0"
+#  - id: "cam23"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=7&subtype=0"
+#  - id: "cam24"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=8&subtype=0"
+#  - id: "cam25"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=9&subtype=0"
+#  - id: "cam26"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=10&subtype=0"
+#  - id: "cam27"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=11&subtype=0"
+#  - id: "cam28"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=12&subtype=0"
+#  - id: "cam29"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=13&subtype=0"
+#  - id: "cam30"
+#    url: "rtsp://admin:Btk89222@@192.168.10.20:554/cam/realmonitor?channel=14&subtype=0"
